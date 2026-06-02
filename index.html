@@ -108,13 +108,13 @@
     let recordedChunks = [];
     let recognition;
     let isRunning = false;
-    let stream;
+    let mainStream;
+    let loopInterval;
 
     const startBtn = document.getElementById('startBtn');
     const statusDiv = document.getElementById('status');
     const logBox = document.getElementById('logBox');
 
-    // Simple function to output terminal activity to the onscreen log-box
     function consoleLog(msg) {
         logBox.innerHTML += `<br>> ${msg}`;
         logBox.scrollTop = logBox.scrollHeight;
@@ -125,23 +125,23 @@
 
         try {
             consoleLog("Requesting screen capture...");
-            stream = await navigator.mediaDevices.getDisplayMedia({
+            mainStream = await navigator.mediaDevices.getDisplayMedia({
                 video: { frameRate: 30 },
                 audio: true 
             });
 
-            consoleLog("Requesting mic context for voice command...");
+            consoleLog("Requesting mic context for voice commands...");
             const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-            startContinuousRecording(stream);
-            initVoiceRecognition(micStream);
 
             isRunning = true;
             startBtn.disabled = true;
             startBtn.innerText = "Buffer Active";
             statusDiv.innerText = "Listening for voice command...";
             statusDiv.classList.add('pulse');
-            consoleLog("Continuous capture timeline initialized.");
+
+            // Start the rolling memory loop
+            startRollingRecorder();
+            initVoiceRecognition(micStream);
 
         } catch (err) {
             consoleLog("Error: " + err.message);
@@ -149,29 +149,41 @@
         }
     });
 
-    function startContinuousRecording(screenStream) {
+    // Instead of cutting raw arrays up, we record real 30-second video segments.
+    // Every 30 seconds, the previous segment is thrown away and a fresh clean one starts.
+    // If you trigger a clip, it immediately downloads the active uncorrupted block.
+    function startRollingRecorder() {
         recordedChunks = [];
-        mainRecorder = new MediaRecorder(screenStream, { mimeType: 'video/webm; codecs=vp9' });
+        
+        // Use standard containers supported natively by ChromeOS
+        mainRecorder = new MediaRecorder(mainStream, { mimeType: 'video/webm; codecs=vp9' });
 
         mainRecorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
-                // Collect 100ms video segments continuously
                 recordedChunks.push(event.data);
-                
-                // Safety limit: To prevent your Chromebook from running out of RAM memory 
-                // during a long gaming/recording session, we drop chunks older than 45 seconds.
-                if (recordedChunks.length > 450) {
-                    recordedChunks.shift(); 
+            }
+        };
+
+        mainRecorder.onstop = () => {
+            // If the voice phrase triggers a save, the script will handle downloading.
+            // Otherwise, if it naturally finishes its 30 seconds, clear memory and restart the loop cleanly.
+            if (isRunning && mainStream.active) {
+                if (statusDiv.innerText !== "Saving clip...") {
+                    startRollingRecorder();
                 }
             }
         };
 
-        // Fire chunks into the array every 100 milliseconds
-        mainRecorder.start(100); 
+        mainRecorder.start();
+        consoleLog("🔄 New 30s recording buffer interval opened.");
 
-        screenStream.getVideoTracks()[0].onended = () => {
-            stopEverything();
-        };
+        // Automatically close and recycle the file every 30 seconds to refresh the buffer window
+        clearInterval(loopInterval);
+        loopInterval = setInterval(() => {
+            if (mainRecorder && mainRecorder.state === "recording") {
+                mainRecorder.stop();
+            }
+        }, 30000); 
     }
 
     function initVoiceRecognition(micStream) {
@@ -204,32 +216,40 @@
     }
 
     function saveScreenClip() {
-        if (recordedChunks.length === 0) return;
-        consoleLog("🎬 Voice phrase matched! Extracting past 30 seconds...");
-        
-        // 100ms chunks * 10 = 1 second. 10 * 30 seconds = 300 chunks.
-        // This isolates strictly the last 30 seconds out of the active buffer history.
-        const lastThirtySecondsChunks = recordedChunks.slice(-300);
-        
-        // Compile only those extracted 30 seconds into the downloadable video file
-        const compiledBlob = new Blob(lastThirtySecondsChunks, { type: 'video/webm' });
-        
-        const videoUrl = URL.createObjectURL(compiledBlob);
-        const downloadLink = document.createElement('a');
-        downloadLink.href = videoUrl;
-        downloadLink.download = `Cinnamoroll_Clip_${Date.now()}.webm`;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-        
-        consoleLog("✅ 30-second video saved successfully!");
+        if (mainRecorder.state !== "recording") return;
+
+        clearInterval(loopInterval); // Freeze the loop timer so it doesn't interrupt compilation
+        statusDiv.innerText = "Saving clip...";
+        consoleLog("🎬 Trigger matched! Finalizing video headers...");
+
+        // Forcing a recorder stop compiles a clean video header structure with valid metadata timestamps
+        mainRecorder.onstop = () => {
+            const compiledBlob = new Blob(recordedChunks, { type: 'video/webm' });
+            
+            const videoUrl = URL.createObjectURL(compiledBlob);
+            const downloadLink = document.createElement('a');
+            downloadLink.href = videoUrl;
+            downloadLink.download = `Cinnamoroll_Clip_${Date.now()}.webm`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            
+            consoleLog("✅ Clean uncorrupted video saved successfully!");
+
+            // Instantly resume the loop structure right after delivery
+            statusDiv.innerText = "Listening for voice command...";
+            startRollingRecorder();
+        };
+
+        mainRecorder.stop();
     }
 
     function stopEverything() {
         isRunning = false;
+        clearInterval(loopInterval);
         if (mainRecorder && mainRecorder.state !== "inactive") mainRecorder.stop();
         if (recognition) recognition.stop();
-        if (stream) stream.getTracks().forEach(track => track.stop());
+        if (mainStream) mainStream.getTracks().forEach(track => track.stop());
         
         startBtn.disabled = false;
         startBtn.innerText = "Start Screen Buffer";
