@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en" class=""><head><script>window.livecodes = window.livecodes || {};</script><title>Untitled Project</title><meta name="title" content="Untitled Project"><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="./style.css"><script src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js" async=""></script><script type="importmap">{
+  "imports": {}
+}</script></head><body>
+
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cinnamoroll Screen Clipper</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f3f7;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            text-align: center;
+            max-width: 450px;
+            width: 90%;
+        }
+        h1 {
+            color: #ff91af;
+            margin-bottom: 5px;
+        }
+        p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        button {
+            background-color: #ff91af;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.3s;
+            margin-top: 20px;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #e07b96;
+            transform: scale(1.02);
+        }
+        button:disabled {
+            background-color: #cccccc;
+            transform: none;
+        }
+        .status {
+            margin-top: 25px;
+            font-weight: bold;
+            color: #555;
+            padding: 10px;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+        .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+        @keyframes pulse-animation {
+            0% { background-color: #fafafa; }
+            50% { background-color: #ffeef2; color: #ff91af; }
+            100% { background-color: #fafafa; }
+        }
+        .log-box {
+            margin-top: 20px;
+            background: #222;
+            color: #00ff00;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: left;
+            height: 100px;
+            overflow-y: auto;
+        }
+    </style>
+
+
+
+<div class="container">
+    <h1>Cinnamoroll Screen Clipper</h1>
+    <p>Share your screen/tab, grant microphone access, and keep this page open in the background. Say <strong>"Cinnamoroll clip"</strong> to capture the past 30 seconds.</p>
+    
+    <button id="startBtn">Start Screen Buffer</button>
+    <div id="status" class="status">Status: Awaiting Activation</div>
+    <div id="logBox" class="log-box">&gt; System ready. Press start...</div>
+</div>
+
+<script>
+    let mainRecorder;
+    let recordedChunks = [];
+    let recognition;
+    let isRunning = false;
+    let stream;
+
+    const startBtn = document.getElementById('startBtn');
+    const statusDiv = document.getElementById('status');
+    const logBox = document.getElementById('logBox');
+
+    function consoleLog(msg) {
+        logBox.innerHTML += `<br>> ${msg}`;
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    startBtn.addEventListener('click', async () => {
+        if (isRunning) return;
+
+        try {
+            consoleLog("Requesting screen capture...");
+            // 1. Capture the system screen/tab video and system audio
+            stream = await navigator.mediaDevices.getDisplayMedia({
+                video: { frameRate: 30 },
+                audio: true 
+            });
+
+            consoleLog("Requesting microphone context for voice triggers...");
+            // 2. Capture the microphone separately so the voice recognition API can hear you
+            const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            startContinuousRecording(stream);
+            initVoiceRecognition(micStream);
+
+            isRunning = true;
+            startBtn.disabled = true;
+            startBtn.innerText = "Buffer Active";
+            statusDiv.innerText = "Listening for voice command...";
+            statusDiv.classList.add('pulse');
+            consoleLog("30s continuous timeline buffer running.");
+
+        } catch (err) {
+            consoleLog("Error: " + err.message);
+            alert("Could not initialize clipper. Make sure you gave screen and mic permissions.");
+        }
+    });
+
+    function startContinuousRecording(screenStream) {
+        recordedChunks = [];
+        
+        // Use standard webm video encoding format
+        mainRecorder = new MediaRecorder(screenStream, { mimeType: 'video/webm; codecs=vp9' });
+
+        mainRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                recordedChunks.push(event.data);
+                
+                // To keep the buffer sitting at a rolling ~30 seconds:
+                // With timeslices generated every 100ms, 30 seconds equals roughly 300 chunks.
+                // We leave a small margin (320 chunks) to guarantee a full 30 seconds.
+                if (recordedChunks.length > 320) {
+                    recordedChunks.shift(); 
+                }
+            }
+        };
+
+        // Command the recorder to spit out media chunks every 100 milliseconds without stopping
+        mainRecorder.start(100); 
+
+        // Handle if user clicks the browser's native "Stop sharing" overlay bar
+        screenStream.getVideoTracks()[0].onended = () => {
+            stopEverything();
+        };
+    }
+
+    function initVoiceRecognition(micStream) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            consoleLog("Speech recognition not natively supported in this browser.");
+            return;
+        }
+
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onresult = (event) => {
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    let transcript = event.results[i][0].transcript.toLowerCase().trim();
+                    consoleLog(`Heard final phrase: "${transcript}"`);
+
+                    if (transcript.includes("cinnamoroll clip") || transcript.includes("cinnamon roll clip")) {
+                        saveScreenClip();
+                    }
+                }
+            }
+        };
+
+        // Ensure the voice listener instantly restarts if it idles out
+        recognition.onend = () => { 
+            if (isRunning) recognition.start(); 
+        };
+
+        recognition.start();
+    }
+
+    function saveScreenClip() {
+        if (recordedChunks.length === 0) {
+            consoleLog("Buffer empty, please wait a moment.");
+            return;
+        }
+
+        consoleLog("🎬 Voice phrase matched! Packaging past 30 seconds...");
+        
+        // Merge the accumulated sequential chunks belonging to the active recording session
+        const compiledBlob = new Blob(recordedChunks, { type: 'video/webm' });
+        
+        // Programmatically generate a hidden download anchor link to deliver the file
+        const videoUrl = URL.createObjectURL(compiledBlob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = videoUrl;
+        downloadLink.download = `Cinnamoroll_Clip_${Date.now()}.webm`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        
+        consoleLog("✅ Video downloaded successfully!");
+    }
+
+    function stopEverything() {
+        isRunning = false;
+        if (mainRecorder && mainRecorder.state !== "inactive") mainRecorder.stop();
+        if (recognition) recognition.stop();
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        
+        startBtn.disabled = false;
+        startBtn.innerText = "Start Screen Buffer";
+        statusDiv.innerText = "Status: Stopped";
+        statusDiv.classList.remove('pulse');
+        consoleLog("Session terminated.");
+    }
+</script>
+
+
+<script src="./script.js"></script></body></html>
