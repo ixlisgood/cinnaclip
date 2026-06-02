@@ -8,6 +8,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cinnamoroll Screen Clipper</title>
+    
+    <link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Cinnamoroll%20Clipper%22%2C%22short_name%22%3A%22CinaClipper%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23ffffff%22%2C%22theme_color%22%3A%22%23ff91af%22%7D">
+    
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -93,7 +96,7 @@
 
 <div class="container">
     <h1>Cinnamoroll Screen Clipper</h1>
-    <p>Share your screen/tab, grant microphone access, and keep this page open in the background. Say <strong>"Cinnamoroll clip"</strong> to capture the past 30 seconds.</p>
+    <p>Grant screen and mic permissions. Keep this app running in its window. Say <strong>"Cinnamoroll clip"</strong> to save the past 30 seconds.</p>
     
     <button id="startBtn">Start Screen Buffer</button>
     <div id="status" class="status">Status: Awaiting Activation</div>
@@ -111,6 +114,7 @@
     const statusDiv = document.getElementById('status');
     const logBox = document.getElementById('logBox');
 
+    // Simple function to output terminal activity to the onscreen log-box
     function consoleLog(msg) {
         logBox.innerHTML += `<br>> ${msg}`;
         logBox.scrollTop = logBox.scrollHeight;
@@ -121,14 +125,12 @@
 
         try {
             consoleLog("Requesting screen capture...");
-            // 1. Capture the system screen/tab video and system audio
             stream = await navigator.mediaDevices.getDisplayMedia({
                 video: { frameRate: 30 },
                 audio: true 
             });
 
-            consoleLog("Requesting microphone context for voice triggers...");
-            // 2. Capture the microphone separately so the voice recognition API can hear you
+            consoleLog("Requesting mic context for voice command...");
             const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
             startContinuousRecording(stream);
@@ -139,37 +141,34 @@
             startBtn.innerText = "Buffer Active";
             statusDiv.innerText = "Listening for voice command...";
             statusDiv.classList.add('pulse');
-            consoleLog("30s continuous timeline buffer running.");
+            consoleLog("Continuous capture timeline initialized.");
 
         } catch (err) {
             consoleLog("Error: " + err.message);
-            alert("Could not initialize clipper. Make sure you gave screen and mic permissions.");
+            alert("Could not start. Ensure screen and mic permissions are allowed.");
         }
     });
 
     function startContinuousRecording(screenStream) {
         recordedChunks = [];
-        
-        // Use standard webm video encoding format
         mainRecorder = new MediaRecorder(screenStream, { mimeType: 'video/webm; codecs=vp9' });
 
         mainRecorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
+                // Collect 100ms video segments continuously
                 recordedChunks.push(event.data);
                 
-                // To keep the buffer sitting at a rolling ~30 seconds:
-                // With timeslices generated every 100ms, 30 seconds equals roughly 300 chunks.
-                // We leave a small margin (320 chunks) to guarantee a full 30 seconds.
-                if (recordedChunks.length > 320) {
+                // Safety limit: To prevent your Chromebook from running out of RAM memory 
+                // during a long gaming/recording session, we drop chunks older than 45 seconds.
+                if (recordedChunks.length > 450) {
                     recordedChunks.shift(); 
                 }
             }
         };
 
-        // Command the recorder to spit out media chunks every 100 milliseconds without stopping
+        // Fire chunks into the array every 100 milliseconds
         mainRecorder.start(100); 
 
-        // Handle if user clicks the browser's native "Stop sharing" overlay bar
         screenStream.getVideoTracks()[0].onended = () => {
             stopEverything();
         };
@@ -178,7 +177,7 @@
     function initVoiceRecognition(micStream) {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
-            consoleLog("Speech recognition not natively supported in this browser.");
+            consoleLog("Speech recognition not supported.");
             return;
         }
 
@@ -191,7 +190,7 @@
             for (let i = event.resultIndex; i < event.results.length; ++i) {
                 if (event.results[i].isFinal) {
                     let transcript = event.results[i][0].transcript.toLowerCase().trim();
-                    consoleLog(`Heard final phrase: "${transcript}"`);
+                    consoleLog(`Heard final: "${transcript}"`);
 
                     if (transcript.includes("cinnamoroll clip") || transcript.includes("cinnamon roll clip")) {
                         saveScreenClip();
@@ -200,26 +199,21 @@
             }
         };
 
-        // Ensure the voice listener instantly restarts if it idles out
-        recognition.onend = () => { 
-            if (isRunning) recognition.start(); 
-        };
-
+        recognition.onend = () => { if (isRunning) recognition.start(); };
         recognition.start();
     }
 
     function saveScreenClip() {
-        if (recordedChunks.length === 0) {
-            consoleLog("Buffer empty, please wait a moment.");
-            return;
-        }
-
-        consoleLog("🎬 Voice phrase matched! Packaging past 30 seconds...");
+        if (recordedChunks.length === 0) return;
+        consoleLog("🎬 Voice phrase matched! Extracting past 30 seconds...");
         
-        // Merge the accumulated sequential chunks belonging to the active recording session
-        const compiledBlob = new Blob(recordedChunks, { type: 'video/webm' });
+        // 100ms chunks * 10 = 1 second. 10 * 30 seconds = 300 chunks.
+        // This isolates strictly the last 30 seconds out of the active buffer history.
+        const lastThirtySecondsChunks = recordedChunks.slice(-300);
         
-        // Programmatically generate a hidden download anchor link to deliver the file
+        // Compile only those extracted 30 seconds into the downloadable video file
+        const compiledBlob = new Blob(lastThirtySecondsChunks, { type: 'video/webm' });
+        
         const videoUrl = URL.createObjectURL(compiledBlob);
         const downloadLink = document.createElement('a');
         downloadLink.href = videoUrl;
@@ -228,7 +222,7 @@
         downloadLink.click();
         document.body.removeChild(downloadLink);
         
-        consoleLog("✅ Video downloaded successfully!");
+        consoleLog("✅ 30-second video saved successfully!");
     }
 
     function stopEverything() {
